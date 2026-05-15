@@ -93,16 +93,6 @@
 
 <script>
     // ------------------- 独立连接管理（主机和客户端不再共享同一个 Peer 实例导致冲突）-------------------
-    // 注意：此页面设计为“主机”与“客户端”两个独立面板，但实际使用时，请只使用其中一侧。
-    // 为了让测试方便，两个面板仍然存在，但它们的 Peer 实例是独立的，且不会自动冲突。
-    // 但在同一个浏览器中打开本页面时，你应该只使用其中一种角色（要么作为主机，要么作为客户端）。
-    // 本版本通过将主机和客户端的 Peer 实例分离，并加入“角色选择”模式来彻底避免冲突。
-    
-    // 更好的方案：让用户选择当前设备是“主机”还是“客户端”，但我们为了保持简洁，直接让页面支持两种模式同时存在但互相独立。
-    // 实际上，如果你在同一个浏览器中同时点击“连接”试图连接自己的房间号，仍然会失败。所以必须用两个不同的标签页/设备。
-    
-    // 我们在这里添加一个检测：如果检测到当前页面的 URL 参数包含 ?client=1，则自动隐藏主机面板，只显示客户端面板。
-    // 这样用户可以用两个标签页：一个不带参数（主机模式），一个带 ?client=1（客户端模式）。
     const urlParams = new URLSearchParams(window.location.search);
     const isClientMode = urlParams.has('client');
     
@@ -114,15 +104,6 @@
         // 主机模式下，隐藏右侧客户端面板（可选，避免误操作）
         document.querySelectorAll('.card')[1].style.display = 'none';
         document.querySelector('.app-container').style.justifyContent = 'center';
-    }
-    
-    // 根据模式初始化不同逻辑
-    if (!isClientMode) {
-        // 主机模式
-        initHost();
-    } else {
-        // 客户端模式
-        initClient();
     }
     
     // 公共函数
@@ -142,11 +123,19 @@
         }
     }
     
-    // ------------------- 主机模式 -------------------
+    // 根据模式初始化
+    if (!isClientMode) {
+        initHost();
+    } else {
+        initClient();
+    }
+    
+    // ------------------- 主机模式 (修复连接状态) -------------------
     function initHost() {
         let peer;
         let localId = "";
-        let currentConn = null;
+        let currentConn = null;     // 当前活动的数据连接
+        let connectionOpen = false;  // 辅助标记，确保open后才可发送
         
         const myRoomIdDiv = document.getElementById('myRoomId');
         const copyRoomBtn = document.getElementById('copyRoomBtn');
@@ -225,8 +214,9 @@
         }
         
         function sendMessageToPeer(text) {
+            // 检查连接是否存在、是否打开
             if (!currentConn || currentConn.open !== true) {
-                connStatusSpan.innerHTML = '❌ 未连接客户端，请等待对方连接';
+                connStatusSpan.innerHTML = '❌ 未连接客户端，请等待对方连接完成后再发送';
                 return false;
             }
             if (!text.trim()) return false;
@@ -241,29 +231,52 @@
             }
         }
         
+        // 核心修复：只有真正 open 后才认为连接可用，并显示已连接
         function setupConnection(conn) {
             if (currentConn && currentConn.open && currentConn !== conn) {
                 currentConn.close();
             }
             currentConn = conn;
-            connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
+            connectionOpen = false;
+            connStatusSpan.innerHTML = '⏳ 正在建立数据通道，请稍候...';
+            
+            // 监听 open 事件（数据通道就绪）
+            const onOpen = () => {
+                if (currentConn === conn) {
+                    connectionOpen = true;
+                    connStatusSpan.innerHTML = '✅ 已与客户端建立连接！可以发送内容了。';
+                }
+            };
+            // 如果已经open（极少数情况），直接调用
+            if (conn.open === true) {
+                onOpen();
+            } else {
+                conn.once('open', onOpen);
+            }
+            
+            // 数据接收
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
                 else if (typeof data === 'string') text = data;
                 if (text) addToStash(text, 'received');
             });
+            
+            // 关闭处理
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
+                    connectionOpen = false;
                     connStatusSpan.innerHTML = '🔌 连接已断开，等待客户端重新连接';
                 }
             });
+            // 错误处理
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
                     currentConn = null;
-                    connStatusSpan.innerHTML = '⚠️ 连接出错';
+                    connectionOpen = false;
+                    connStatusSpan.innerHTML = '⚠️ 连接出错，请刷新页面重试';
                 }
             });
         }
@@ -286,6 +299,7 @@
                 connStatusSpan.innerHTML = '🟢 房间已创建，等待客户端连接...';
             });
             peer.on('connection', (conn) => {
+                // 新的客户端连接到来
                 setupConnection(conn);
             });
             peer.on('error', (err) => {
@@ -308,7 +322,7 @@
             if (sendMessageToPeer(text)) {
                 sendInput.value = '';
             } else {
-                // 提示已经在函数内更新状态栏
+                // 提示已由 sendMessageToPeer 更新状态栏
             }
         });
         
@@ -323,10 +337,11 @@
         initPeer();
     }
     
-    // ------------------- 客户端模式 -------------------
+    // ------------------- 客户端模式 (修复连接状态) -------------------
     function initClient() {
         let peer;
         let currentConn = null;
+        let connectionOpen = false;
         
         const remotePeerIdInput = document.getElementById('remotePeerIdInput');
         const joinBtn = document.getElementById('joinBtn');
@@ -355,7 +370,6 @@
             history.unshift({ text: text.trim(), timestamp: Date.now(), direction });
             if (history.length > 50) history.pop();
             saveHistory(history);
-            // 客户端暂不渲染历史列表（可简化），只显示接收消息
             appendMobileReceived(text, direction);
         }
         
@@ -375,7 +389,7 @@
         
         function sendMessageToPeer(text) {
             if (!currentConn || currentConn.open !== true) {
-                mobileConnStatus.innerText = '❌ 未连接到主机';
+                mobileConnStatus.innerText = '❌ 未连接到主机，请等待连接完成后再发送';
                 return false;
             }
             if (!text.trim()) return false;
@@ -395,7 +409,21 @@
                 currentConn.close();
             }
             currentConn = conn;
-            mobileConnStatus.innerText = '✅ 已连接到主机';
+            connectionOpen = false;
+            mobileConnStatus.innerText = '⏳ 正在建立数据通道...';
+            
+            const onOpen = () => {
+                if (currentConn === conn) {
+                    connectionOpen = true;
+                    mobileConnStatus.innerText = '✅ 已连接到主机，可以互传内容了';
+                }
+            };
+            if (conn.open === true) {
+                onOpen();
+            } else {
+                conn.once('open', onOpen);
+            }
+            
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
@@ -405,6 +433,7 @@
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
+                    connectionOpen = false;
                     mobileConnStatus.innerText = '🔌 连接已断开';
                 }
             });
@@ -412,7 +441,8 @@
                 console.warn(err);
                 if (currentConn === conn) {
                     currentConn = null;
-                    mobileConnStatus.innerText = '⚠️ 连接出错';
+                    connectionOpen = false;
+                    mobileConnStatus.innerText = '⚠️ 连接出错，请重试';
                 }
             });
         }
@@ -432,11 +462,9 @@
             }
             const newConn = peer.connect(remoteId.trim(), { reliable: true });
             setupConnection(newConn);
-            newConn.on('open', () => {
-                mobileConnStatus.innerText = `✅ 成功连接到主机 ${remoteId}`;
-            });
+            // 连接打开时已经在 setupConnection 中通过 open 事件处理，这里只需要额外处理连接失败情况
             newConn.on('error', (e) => {
-                mobileConnStatus.innerText = '❌ 连接失败，请检查房间号';
+                mobileConnStatus.innerText = '❌ 连接失败，请检查房间号或网络';
                 console.error(e);
             });
         }
@@ -447,7 +475,6 @@
                 config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
             });
             peer.on('open', (id) => {
-                // 客户端不需要显示自己的ID，但可以记录
                 console.log('Client peer id:', id);
                 mobileConnStatus.innerText = '就绪，请输入主机房间号';
                 // 自动填充URL参数中的房间号
