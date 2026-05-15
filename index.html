@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>跨平台剪贴板 · 暂存箱（稳定版）</title>
+    <title>跨平台剪贴板 · 暂存箱（稳定增强版）</title>
     <script src="one.js"></script>
     <script src="two.js"></script>
     <style>
@@ -27,6 +27,7 @@
         .qrcode-container { text-align: center; margin: 15px 0; padding: 15px; background: white; border-radius: 24px; display: inline-block; width: 100%; }
         #qrcode { display: flex; justify-content: center; }
         .warning { color: #ffaa66; font-size: 0.8rem; margin-top: 10px; }
+        .retry-note { color: #88ccff; font-size: 0.75rem; margin-top: 8px; }
         @media (max-width: 800px) { .card { min-width: 100%; } }
         hr { border-color: #ffffff33; margin: 20px 0; }
     </style>
@@ -83,27 +84,28 @@
         <div class="warning">💡 使用说明：<br>
             1️⃣ 主机（电脑）打开本页面，自动生成房间号。<br>
             2️⃣ 另一台设备打开本页面（URL 后加 ?client=1 或用二维码），输入房间号点击“连接”。<br>
-            3️⃣ 两台设备需在同一 WiFi 或公网可达（跨网络需要 TURN 辅助，已内置）。<br>
-            ⚠️ 如果长时间“正在建立数据通道”，请检查网络防火墙，或尝试手机开热点两台设备同时连接。
+            3️⃣ <strong>如果长时间“建立数据通道中”，请等待最多 20 秒，系统会自动重试连接。</strong><br>
+            ⚠️ 跨网络需要 TURN 辅助，本版本已集成多个免费 TURN 服务器，但仍可能受网络限制。推荐两台设备连接同一 WiFi。
         </div>
+        <div class="retry-note">🔄 内置自动重试机制：连接超时 15 秒后自动重新尝试。</div>
     </div>
 </div>
 
 <script>
-    // ---------- 增强 ICE 服务器配置（解决跨设备无法连接问题）----------
+    // ---------- 增强型 ICE 服务器配置（多个稳定 TURN）----------
     const ICE_CONFIG = {
         iceServers: [
+            // Google STUN
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            // PeerJS 官方 TURN 服务器（需与 PeerServer 配合使用）
-            { urls: 'turn:eu-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
-            { urls: 'turn:us-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
-            // 备用公共 TURN（推荐，但可能限速）
+            // 免费 TURN - Metered.ca (推荐，每日10GB)
             { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+            // 备用 TURN - PeerJS 官方
+            { urls: 'turn:eu-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+            { urls: 'turn:us-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' }
         ],
         sdpSemantics: 'unified-plan'
     };
@@ -141,12 +143,13 @@
         initClient();
     }
     
-    // ------------------- 主机模式 -------------------
+    // ------------------- 主机模式 (带超时重试) -------------------
     function initHost() {
         let peer;
         let localId = "";
         let currentConn = null;
         let connectionOpen = false;
+        let connectTimeout = null;   // 连接超时定时器
         
         const myRoomIdDiv = document.getElementById('myRoomId');
         const copyRoomBtn = document.getElementById('copyRoomBtn');
@@ -249,8 +252,23 @@
             connectionOpen = false;
             connStatusSpan.innerHTML = '⏳ 正在建立数据通道，请稍候...';
             
+            // 设置超时检测：如果15秒内没有变成 open，则认为连接失败，关闭并等待重连
+            if (connectTimeout) clearTimeout(connectTimeout);
+            connectTimeout = setTimeout(() => {
+                if (currentConn === conn && !connectionOpen) {
+                    console.warn('连接超时，关闭当前连接');
+                    connStatusSpan.innerHTML = '⚠️ 连接超时，尝试重新连接...';
+                    if (currentConn && currentConn.close) currentConn.close();
+                    currentConn = null;
+                    connectionOpen = false;
+                    // 不自动重连，等待客户端重新发起连接（因为主机是被动方）
+                    connStatusSpan.innerHTML = '🔄 连接超时，请客户端重新点击连接按钮';
+                }
+            }, 15000);
+            
             const onOpen = () => {
                 if (currentConn === conn) {
+                    if (connectTimeout) clearTimeout(connectTimeout);
                     connectionOpen = true;
                     connStatusSpan.innerHTML = '✅ 数据通道已就绪！可以互传内容了。';
                 }
@@ -270,6 +288,7 @@
             
             conn.on('close', () => {
                 if (currentConn === conn) {
+                    if (connectTimeout) clearTimeout(connectTimeout);
                     currentConn = null;
                     connectionOpen = false;
                     connStatusSpan.innerHTML = '🔌 连接已断开，等待客户端重新连接';
@@ -278,16 +297,17 @@
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
+                    if (connectTimeout) clearTimeout(connectTimeout);
                     currentConn = null;
                     connectionOpen = false;
-                    connStatusSpan.innerHTML = '⚠️ 连接出错，请刷新页面重试';
+                    connStatusSpan.innerHTML = '⚠️ 连接出错，请客户端重试';
                 }
             });
         }
         
         function initPeer() {
             peer = new Peer({
-                debug: 1,   // 开启调试日志，便于排查
+                debug: 1,
                 config: ICE_CONFIG
             });
             peer.on('open', (id) => {
@@ -338,11 +358,13 @@
         initPeer();
     }
     
-    // ------------------- 客户端模式 -------------------
+    // ------------------- 客户端模式 (带超时重试) -------------------
     function initClient() {
         let peer;
         let currentConn = null;
         let connectionOpen = false;
+        let retryCount = 0;
+        let lastRemoteId = '';
         
         const remotePeerIdInput = document.getElementById('remotePeerIdInput');
         const joinBtn = document.getElementById('joinBtn');
@@ -405,7 +427,8 @@
             }
         }
         
-        function setupConnection(conn) {
+        let connectTimeoutId = null;
+        function setupConnection(conn, remoteId) {
             if (currentConn && currentConn.open && currentConn !== conn) {
                 currentConn.close();
             }
@@ -413,10 +436,34 @@
             connectionOpen = false;
             mobileConnStatus.innerText = '⏳ 正在建立数据通道...';
             
+            if (connectTimeoutId) clearTimeout(connectTimeoutId);
+            connectTimeoutId = setTimeout(() => {
+                if (currentConn === conn && !connectionOpen) {
+                    console.warn('客户端连接超时，准备重试');
+                    mobileConnStatus.innerText = '⚠️ 连接超时，正在重试...';
+                    if (currentConn && currentConn.close) currentConn.close();
+                    currentConn = null;
+                    connectionOpen = false;
+                    // 自动重试连接
+                    if (retryCount < 3) {
+                        retryCount++;
+                        setTimeout(() => {
+                            mobileConnStatus.innerText = `🔄 重试第 ${retryCount} 次...`;
+                            connectToPeer(remoteId);
+                        }, 2000);
+                    } else {
+                        mobileConnStatus.innerText = '❌ 多次重试失败，请检查网络或房间号';
+                        retryCount = 0;
+                    }
+                }
+            }, 15000);
+            
             const onOpen = () => {
                 if (currentConn === conn) {
+                    if (connectTimeoutId) clearTimeout(connectTimeoutId);
                     connectionOpen = true;
                     mobileConnStatus.innerText = '✅ 数据通道已建立，可以互传内容了';
+                    retryCount = 0; // 成功后重置重试计数
                 }
             };
             if (conn.open === true) {
@@ -433,6 +480,7 @@
             });
             conn.on('close', () => {
                 if (currentConn === conn) {
+                    if (connectTimeoutId) clearTimeout(connectTimeoutId);
                     currentConn = null;
                     connectionOpen = false;
                     mobileConnStatus.innerText = '🔌 连接已断开';
@@ -441,6 +489,7 @@
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
+                    if (connectTimeoutId) clearTimeout(connectTimeoutId);
                     currentConn = null;
                     connectionOpen = false;
                     mobileConnStatus.innerText = '⚠️ 连接出错，请重试';
@@ -449,6 +498,7 @@
         }
         
         function connectToPeer(remoteId) {
+            lastRemoteId = remoteId;
             if (!remoteId.trim()) {
                 mobileConnStatus.innerText = '⚠️ 请输入房间号';
                 return;
@@ -462,8 +512,9 @@
                 return;
             }
             const newConn = peer.connect(remoteId.trim(), { reliable: true });
-            setupConnection(newConn);
+            setupConnection(newConn, remoteId);
             newConn.on('error', (e) => {
+                if (connectTimeoutId) clearTimeout(connectTimeoutId);
                 mobileConnStatus.innerText = '❌ 连接失败，请检查房间号或网络';
                 console.error(e);
             });
@@ -489,7 +540,10 @@
             });
         }
         
-        joinBtn.addEventListener('click', () => connectToPeer(remotePeerIdInput.value));
+        joinBtn.addEventListener('click', () => {
+            retryCount = 0;
+            connectToPeer(remotePeerIdInput.value);
+        });
         mobileSendBtn.addEventListener('click', () => {
             const text = mobileSendInput.value.trim();
             if (!text) return;
