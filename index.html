@@ -33,7 +33,6 @@
 </head>
 <body>
 <div class="app-container">
-    <!-- 左侧：主机面板 -->
     <div class="card">
         <h2>📦 我的暂存箱 (主机)</h2>
         <div class="room-area">
@@ -61,7 +60,6 @@
         <div class="messages" id="messageList">暂无内容</div>
     </div>
 
-    <!-- 右侧：客户端面板 -->
     <div class="card">
         <h2>📱 客户端 (手机/另一台电脑)</h2>
         <div style="background:#2a3a30; border-radius:20px; padding:16px;">
@@ -83,30 +81,44 @@
             </div>
         </div>
         <div class="warning">💡 使用说明：<br>
-            1️⃣ 在主机（电脑）上打开本页面，会自动生成房间号。<br>
-            2️⃣ 在另一台设备（手机或另一电脑）上打开本页面，输入主机的房间号并点击“连接”。<br>
-            3️⃣ 两台设备即可互传文本，历史记录保存在各自浏览器中。<br>
-            ⚠️ 请勿在同一浏览器的同一个标签页内同时操作两侧，应使用两个不同的标签页（其中一个可用无痕模式）或两台设备。
+            1️⃣ 主机（电脑）打开本页面，自动生成房间号。<br>
+            2️⃣ 另一台设备打开本页面（URL 后加 ?client=1 或用二维码），输入房间号点击“连接”。<br>
+            3️⃣ 两台设备需在同一 WiFi 或公网可达（跨网络需要 TURN 辅助，已内置）。<br>
+            ⚠️ 如果长时间“正在建立数据通道”，请检查网络防火墙，或尝试手机开热点两台设备同时连接。
         </div>
     </div>
 </div>
 
 <script>
-    // ------------------- 独立连接管理（主机和客户端不再共享同一个 Peer 实例导致冲突）-------------------
+    // ---------- 增强 ICE 服务器配置（解决跨设备无法连接问题）----------
+    const ICE_CONFIG = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            // PeerJS 官方 TURN 服务器（需与 PeerServer 配合使用）
+            { urls: 'turn:eu-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+            { urls: 'turn:us-0.turn.peerjs.com:3478', username: 'peerjs', credential: 'peerjsp' },
+            // 备用公共 TURN（推荐，但可能限速）
+            { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+        ],
+        sdpSemantics: 'unified-plan'
+    };
+
     const urlParams = new URLSearchParams(window.location.search);
     const isClientMode = urlParams.has('client');
     
     if (isClientMode) {
-        // 客户端模式下，隐藏左侧主机面板，只显示右侧客户端面板
         document.querySelectorAll('.card')[0].style.display = 'none';
         document.querySelector('.app-container').style.justifyContent = 'center';
     } else {
-        // 主机模式下，隐藏右侧客户端面板（可选，避免误操作）
         document.querySelectorAll('.card')[1].style.display = 'none';
         document.querySelector('.app-container').style.justifyContent = 'center';
     }
     
-    // 公共函数
     function escapeHtml(str) {
         return str.replace(/[&<>]/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[m] || m));
     }
@@ -123,19 +135,18 @@
         }
     }
     
-    // 根据模式初始化
     if (!isClientMode) {
         initHost();
     } else {
         initClient();
     }
     
-    // ------------------- 主机模式 (修复连接状态) -------------------
+    // ------------------- 主机模式 -------------------
     function initHost() {
         let peer;
         let localId = "";
-        let currentConn = null;     // 当前活动的数据连接
-        let connectionOpen = false;  // 辅助标记，确保open后才可发送
+        let currentConn = null;
+        let connectionOpen = false;
         
         const myRoomIdDiv = document.getElementById('myRoomId');
         const copyRoomBtn = document.getElementById('copyRoomBtn');
@@ -214,9 +225,8 @@
         }
         
         function sendMessageToPeer(text) {
-            // 检查连接是否存在、是否打开
             if (!currentConn || currentConn.open !== true) {
-                connStatusSpan.innerHTML = '❌ 未连接客户端，请等待对方连接完成后再发送';
+                connStatusSpan.innerHTML = '❌ 未连接客户端，请等待数据通道建立后再发送';
                 return false;
             }
             if (!text.trim()) return false;
@@ -231,7 +241,6 @@
             }
         }
         
-        // 核心修复：只有真正 open 后才认为连接可用，并显示已连接
         function setupConnection(conn) {
             if (currentConn && currentConn.open && currentConn !== conn) {
                 currentConn.close();
@@ -240,21 +249,18 @@
             connectionOpen = false;
             connStatusSpan.innerHTML = '⏳ 正在建立数据通道，请稍候...';
             
-            // 监听 open 事件（数据通道就绪）
             const onOpen = () => {
                 if (currentConn === conn) {
                     connectionOpen = true;
-                    connStatusSpan.innerHTML = '✅ 已与客户端建立连接！可以发送内容了。';
+                    connStatusSpan.innerHTML = '✅ 数据通道已就绪！可以互传内容了。';
                 }
             };
-            // 如果已经open（极少数情况），直接调用
             if (conn.open === true) {
                 onOpen();
             } else {
                 conn.once('open', onOpen);
             }
             
-            // 数据接收
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
@@ -262,7 +268,6 @@
                 if (text) addToStash(text, 'received');
             });
             
-            // 关闭处理
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
@@ -270,7 +275,6 @@
                     connStatusSpan.innerHTML = '🔌 连接已断开，等待客户端重新连接';
                 }
             });
-            // 错误处理
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
@@ -283,8 +287,8 @@
         
         function initPeer() {
             peer = new Peer({
-                debug: 0,
-                config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+                debug: 1,   // 开启调试日志，便于排查
+                config: ICE_CONFIG
             });
             peer.on('open', (id) => {
                 localId = id;
@@ -299,7 +303,6 @@
                 connStatusSpan.innerHTML = '🟢 房间已创建，等待客户端连接...';
             });
             peer.on('connection', (conn) => {
-                // 新的客户端连接到来
                 setupConnection(conn);
             });
             peer.on('error', (err) => {
@@ -321,8 +324,6 @@
             if (!text) return;
             if (sendMessageToPeer(text)) {
                 sendInput.value = '';
-            } else {
-                // 提示已由 sendMessageToPeer 更新状态栏
             }
         });
         
@@ -337,7 +338,7 @@
         initPeer();
     }
     
-    // ------------------- 客户端模式 (修复连接状态) -------------------
+    // ------------------- 客户端模式 -------------------
     function initClient() {
         let peer;
         let currentConn = null;
@@ -389,7 +390,7 @@
         
         function sendMessageToPeer(text) {
             if (!currentConn || currentConn.open !== true) {
-                mobileConnStatus.innerText = '❌ 未连接到主机，请等待连接完成后再发送';
+                mobileConnStatus.innerText = '❌ 未连接到主机，请等待数据通道建立后再发送';
                 return false;
             }
             if (!text.trim()) return false;
@@ -415,7 +416,7 @@
             const onOpen = () => {
                 if (currentConn === conn) {
                     connectionOpen = true;
-                    mobileConnStatus.innerText = '✅ 已连接到主机，可以互传内容了';
+                    mobileConnStatus.innerText = '✅ 数据通道已建立，可以互传内容了';
                 }
             };
             if (conn.open === true) {
@@ -462,7 +463,6 @@
             }
             const newConn = peer.connect(remoteId.trim(), { reliable: true });
             setupConnection(newConn);
-            // 连接打开时已经在 setupConnection 中通过 open 事件处理，这里只需要额外处理连接失败情况
             newConn.on('error', (e) => {
                 mobileConnStatus.innerText = '❌ 连接失败，请检查房间号或网络';
                 console.error(e);
@@ -471,13 +471,12 @@
         
         function initPeer() {
             peer = new Peer({
-                debug: 0,
-                config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+                debug: 1,
+                config: ICE_CONFIG
             });
             peer.on('open', (id) => {
                 console.log('Client peer id:', id);
                 mobileConnStatus.innerText = '就绪，请输入主机房间号';
-                // 自动填充URL参数中的房间号
                 const roomParam = urlParams.get('room');
                 if (roomParam) {
                     remotePeerIdInput.value = roomParam;
