@@ -4,8 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>跨平台剪贴板</title>
+    <!-- 使用本地下载的 JS 文件，避免 CDN 被跟踪防护拦截 -->
+    <script src="one.js"></script>
+    <script src="two.js"></script>
     <style>
-        * { box-sizing: border-box; font-family: system-ui, sans-serif; }
+        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
         body { background: linear-gradient(135deg, #1e2b3c 0%, #0f1a24 100%); margin: 0; min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
         .app-container { max-width: 1300px; width: 100%; display: flex; flex-wrap: wrap; gap: 24px; justify-content: center; }
         .card { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 32px; padding: 24px; box-shadow: 0 25px 45px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.2); flex: 1; min-width: 280px; }
@@ -28,13 +31,10 @@
         @media (max-width: 800px) { .card { min-width: 100%; } }
         hr { border-color: #ffffff33; margin: 20px 0; }
     </style>
-    <!-- 使用本地 js 文件，请确保路径正确 -->
-    <script src="one.js"></script>
-    <script src="two.js"></script>
 </head>
 <body>
 <div class="app-container">
-    <div class="card">
+    <div class="card" id="hostCard">
         <h2>📦 我的暂存箱 (主机)</h2>
         <div class="room-area">
             <div style="color:white; margin-bottom: 8px;">🔑 你的房间号</div>
@@ -48,7 +48,6 @@
         </div>
         <div class="flex-between">
             <span style="color:white;">✏️ 发送新内容</span>
-            <span style="color:#ccc; font-size:12px;">自动同步到已连接的设备</span>
         </div>
         <div class="input-group">
             <input type="text" id="sendInput" placeholder="输入文字、代码或网址..." autocomplete="off">
@@ -60,7 +59,8 @@
         </div>
         <div class="messages" id="messageList">暂无内容</div>
     </div>
-    <div class="card">
+
+    <div class="card" id="clientCard">
         <h2>📱 客户端 (手机/另一台电脑)</h2>
         <div style="background:#2a3a30; border-radius:20px; padding:16px;">
             <div style="color:white; margin-bottom:12px;">🔗 加入主机的房间</div>
@@ -90,26 +90,16 @@
 </div>
 
 <script>
-    // 模式判断
-    const urlParams = new URLSearchParams(window.location.search);
-    const isClientMode = urlParams.has('client');
-    
-    if (isClientMode) {
-        document.querySelectorAll('.card')[0].style.display = 'none';
-        document.querySelector('.app-container').style.justifyContent = 'center';
-    } else {
-        document.querySelectorAll('.card')[1].style.display = 'none';
-        document.querySelector('.app-container').style.justifyContent = 'center';
-    }
-    
-    // 公共函数
+    // ======================== 公共辅助函数 ========================
     function escapeHtml(str) {
-        return str.replace(/[&<>]/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[m] || m));
+        if (!str) return '';
+        return str.replace(/[&<>]/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[m]));
     }
-    
+
     function copyToClipboard(text) {
-        if (navigator.clipboard) navigator.clipboard.writeText(text).catch(e=>console.warn);
-        else {
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).catch(e => console.warn);
+        } else {
             const ta = document.createElement('textarea');
             ta.value = text;
             document.body.appendChild(ta);
@@ -118,14 +108,30 @@
             document.body.removeChild(ta);
         }
     }
-    
-    // ------------------- 主机模式 -------------------
-    if (!isClientMode) {
-        let peer;
+
+    // 判断当前模式：URL 参数 ?client=1 则为客户端模式，否则为主机模式
+    const urlParams = new URLSearchParams(window.location.search);
+    const isClientMode = urlParams.has('client');
+
+    // 根据模式显示/隐藏对应的卡片
+    if (isClientMode) {
+        document.getElementById('hostCard').style.display = 'none';
+        document.getElementById('clientCard').style.display = 'block';
+        initClient();
+    } else {
+        document.getElementById('hostCard').style.display = 'block';
+        document.getElementById('clientCard').style.display = 'none';
+        initHost();
+    }
+
+    // ======================== 主机模式 ========================
+    function initHost() {
+        let peer = null;
         let localId = "";
         let currentConn = null;
-        let isConnected = false;  // 关键：自定义连接状态
-        
+        let isConnected = false;      // 自定义连接状态标志
+        let pendingRender = false;
+
         const myRoomIdDiv = document.getElementById('myRoomId');
         const copyRoomBtn = document.getElementById('copyRoomBtn');
         const qrcodeDiv = document.getElementById('qrcode');
@@ -134,9 +140,10 @@
         const sendBtn = document.getElementById('sendBtn');
         const messageList = document.getElementById('messageList');
         const clearHistoryBtn = document.getElementById('clearHistoryBtn');
-        
+
         const STORAGE_KEY = 'clipboard_stash_host';
-        
+
+        // 存储操作
         function loadHistory() {
             const stored = localStorage.getItem(STORAGE_KEY);
             if (stored) {
@@ -144,27 +151,20 @@
             }
             return [];
         }
-        
         function saveHistory(history) {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
         }
-        
-        let pendingRender = false;
         function addToStash(text, direction) {
-            if (!text || text.trim() === '') return;
+            if (!text || !text.trim()) return;
             const history = loadHistory();
             history.unshift({ text: text.trim(), timestamp: Date.now(), direction });
             if (history.length > 50) history.pop();
             saveHistory(history);
             if (!pendingRender) {
                 pendingRender = true;
-                setTimeout(() => {
-                    renderMessageList();
-                    pendingRender = false;
-                }, 20);
+                setTimeout(() => { renderMessageList(); pendingRender = false; }, 20);
             }
         }
-        
         function renderMessageList() {
             const history = loadHistory();
             if (!history.length) {
@@ -193,7 +193,6 @@
                 btn.addEventListener('click', copyHandler);
             });
         }
-        
         function copyHandler(e) {
             const text = e.currentTarget.getAttribute('data-text');
             copyToClipboard(text);
@@ -201,7 +200,8 @@
             e.currentTarget.innerText = '✅ 已复制';
             setTimeout(() => { e.currentTarget.innerText = original; }, 1000);
         }
-        
+
+        // 发送消息（核心修复：使用 isConnected 标志）
         function sendMessageToPeer(text) {
             if (!currentConn || !isConnected) {
                 connStatusSpan.innerHTML = '❌ 未连接客户端，请等待对方连接';
@@ -218,32 +218,34 @@
                 return false;
             }
         }
-        
+
+        // 统一设置连接（主机模式是被动接收连接）
         function setupConnection(conn) {
-            if (currentConn && currentConn !== conn) {
+            // 如果已有连接且不同，关闭旧连接
+            if (currentConn && currentConn !== conn && currentConn.open) {
                 currentConn.close();
             }
             currentConn = conn;
-            isConnected = false;  // 初始未连接
-            
-            // 如果连接已经 open（被动接收时可能已经 open）
-            if (conn.open === true) {
-                isConnected = true;
-                connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
-            }
-            
+            isConnected = false;  // 初始未就绪
+
+            // 监听 open 事件（对被动接收的连接，这个事件也会触发）
             conn.on('open', () => {
                 isConnected = true;
                 connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
             });
-            
+            // 如果连接已经打开（极少情况，但安全处理）
+            if (conn.open) {
+                isConnected = true;
+                connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
+            }
+
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
                 else if (typeof data === 'string') text = data;
                 if (text) addToStash(text, 'received');
             });
-            
+
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
@@ -251,9 +253,8 @@
                     connStatusSpan.innerHTML = '🔌 连接已断开，等待客户端重新连接';
                 }
             });
-            
             conn.on('error', (err) => {
-                console.warn(err);
+                console.warn('Connection error:', err);
                 if (currentConn === conn) {
                     currentConn = null;
                     isConnected = false;
@@ -261,7 +262,7 @@
                 }
             });
         }
-        
+
         function initPeer() {
             peer = new Peer({
                 debug: 0,
@@ -271,8 +272,10 @@
                 localId = id;
                 myRoomIdDiv.innerText = localId;
                 qrcodeDiv.innerHTML = '';
+                // 生成包含 client 模式和房间号的二维码
+                const clientUrl = window.location.href.split('?')[0] + '?client=1&room=' + localId;
                 new QRCode(qrcodeDiv, {
-                    text: window.location.href.split('?')[0] + '?client=1&room=' + localId,
+                    text: clientUrl,
                     width: 140,
                     height: 140,
                     correctLevel: QRCode.CorrectLevel.H
@@ -287,7 +290,8 @@
                 connStatusSpan.innerHTML = '⚠️ 连接服务失败，请刷新';
             });
         }
-        
+
+        // 事件绑定
         copyRoomBtn.addEventListener('click', () => {
             if (localId) {
                 copyToClipboard(localId);
@@ -295,7 +299,6 @@
                 setTimeout(() => copyRoomBtn.innerText = '📋 复制房间号', 1500);
             }
         });
-        
         sendBtn.addEventListener('click', () => {
             const text = sendInput.value.trim();
             if (!text) return;
@@ -303,33 +306,32 @@
                 sendInput.value = '';
             }
         });
-        
         clearHistoryBtn.addEventListener('click', () => {
             if (confirm('清空暂存箱所有记录？')) {
                 saveHistory([]);
                 renderMessageList();
             }
         });
-        
+
         renderMessageList();
         initPeer();
     }
-    
-    // ------------------- 客户端模式 -------------------
-    if (isClientMode) {
-        let peer;
+
+    // ======================== 客户端模式 ========================
+    function initClient() {
+        let peer = null;
         let currentConn = null;
         let isConnected = false;
-        
+
         const remotePeerIdInput = document.getElementById('remotePeerIdInput');
         const joinBtn = document.getElementById('joinBtn');
         const mobileConnStatus = document.getElementById('mobileConnStatus');
         const mobileMsgList = document.getElementById('mobileMsgList');
         const mobileSendInput = document.getElementById('mobileSendInput');
         const mobileSendBtn = document.getElementById('mobileSendBtn');
-        
+
         const STORAGE_KEY = 'clipboard_stash_client';
-        
+
         function loadHistory() {
             const stored = localStorage.getItem(STORAGE_KEY);
             if (stored) {
@@ -337,20 +339,17 @@
             }
             return [];
         }
-        
         function saveHistory(history) {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
         }
-        
         function addToStash(text, direction) {
-            if (!text || text.trim() === '') return;
+            if (!text || !text.trim()) return;
             const history = loadHistory();
             history.unshift({ text: text.trim(), timestamp: Date.now(), direction });
             if (history.length > 50) history.pop();
             saveHistory(history);
             appendMobileReceived(text, direction);
         }
-        
         function appendMobileReceived(text, direction = 'received') {
             const div = document.createElement('div');
             div.className = 'msg-item';
@@ -364,7 +363,8 @@
                 setTimeout(() => e.target.innerText = '复制', 1000);
             });
         }
-        
+
+        // 发送消息（客户端主动）
         function sendMessageToPeer(text) {
             if (!currentConn || !isConnected) {
                 mobileConnStatus.innerText = '❌ 未连接到主机';
@@ -381,31 +381,27 @@
                 return false;
             }
         }
-        
+
         function setupConnection(conn) {
-            if (currentConn && currentConn !== conn) {
+            if (currentConn && currentConn !== conn && currentConn.open) {
                 currentConn.close();
             }
             currentConn = conn;
             isConnected = false;
-            
-            if (conn.open === true) {
-                isConnected = true;
-                mobileConnStatus.innerText = '✅ 已连接到主机';
-            }
-            
             conn.on('open', () => {
                 isConnected = true;
-                mobileConnStatus.innerText = '✅ 已连接到主机';
+                mobileConnStatus.innerText = `✅ 已连接到主机 ${conn.peer}`;
             });
-            
+            if (conn.open) {
+                isConnected = true;
+                mobileConnStatus.innerText = `✅ 已连接到主机 ${conn.peer}`;
+            }
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
                 else if (typeof data === 'string') text = data;
                 if (text) addToStash(text, 'received');
             });
-            
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
@@ -413,7 +409,6 @@
                     mobileConnStatus.innerText = '🔌 连接已断开';
                 }
             });
-            
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
@@ -423,7 +418,7 @@
                 }
             });
         }
-        
+
         function connectToPeer(remoteId) {
             if (!remoteId.trim()) {
                 mobileConnStatus.innerText = '⚠️ 请输入房间号';
@@ -433,18 +428,20 @@
                 mobileConnStatus.innerText = '⚠️ 初始化中，稍后再试';
                 return;
             }
-            if (currentConn && isConnected && currentConn.peer === remoteId) {
+            if (currentConn && currentConn.open && currentConn.peer === remoteId) {
                 mobileConnStatus.innerText = '🔗 已经连接该房间';
                 return;
             }
+            // 主动发起连接
             const newConn = peer.connect(remoteId.trim(), { reliable: true });
             setupConnection(newConn);
+            // 注意：主动连接时，open 事件会稍后触发，setupConnection 中已监听
             newConn.on('error', (e) => {
                 mobileConnStatus.innerText = '❌ 连接失败，请检查房间号';
                 console.error(e);
             });
         }
-        
+
         function initPeer() {
             peer = new Peer({
                 debug: 0,
@@ -453,6 +450,7 @@
             peer.on('open', (id) => {
                 console.log('Client peer id:', id);
                 mobileConnStatus.innerText = '就绪，请输入主机房间号';
+                // 自动填充 URL 参数中的房间号（如果存在）
                 const roomParam = urlParams.get('room');
                 if (roomParam) {
                     remotePeerIdInput.value = roomParam;
@@ -464,7 +462,7 @@
                 mobileConnStatus.innerText = '⚠️ 连接服务失败，请刷新';
             });
         }
-        
+
         joinBtn.addEventListener('click', () => connectToPeer(remotePeerIdInput.value));
         mobileSendBtn.addEventListener('click', () => {
             const text = mobileSendInput.value.trim();
@@ -473,7 +471,7 @@
                 mobileSendInput.value = '';
             }
         });
-        
+
         initPeer();
     }
 </script>
