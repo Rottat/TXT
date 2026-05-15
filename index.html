@@ -3,11 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>跨平台剪贴板 · 暂存箱（稳定版）</title>
-    <script src="one.js"></script>
-    <script src="two.js"></script>
+    <title>跨平台剪贴板</title>
     <style>
-        * { box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        * { box-sizing: border-box; font-family: system-ui, sans-serif; }
         body { background: linear-gradient(135deg, #1e2b3c 0%, #0f1a24 100%); margin: 0; min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
         .app-container { max-width: 1300px; width: 100%; display: flex; flex-wrap: wrap; gap: 24px; justify-content: center; }
         .card { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 32px; padding: 24px; box-shadow: 0 25px 45px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.2); flex: 1; min-width: 280px; }
@@ -30,10 +28,12 @@
         @media (max-width: 800px) { .card { min-width: 100%; } }
         hr { border-color: #ffffff33; margin: 20px 0; }
     </style>
+    <!-- 使用本地 js 文件，请确保路径正确 -->
+    <script src="one.js"></script>
+    <script src="two.js"></script>
 </head>
 <body>
 <div class="app-container">
-    <!-- 左侧：主机面板 -->
     <div class="card">
         <h2>📦 我的暂存箱 (主机)</h2>
         <div class="room-area">
@@ -60,8 +60,6 @@
         </div>
         <div class="messages" id="messageList">暂无内容</div>
     </div>
-
-    <!-- 右侧：客户端面板 -->
     <div class="card">
         <h2>📱 客户端 (手机/另一台电脑)</h2>
         <div style="background:#2a3a30; border-radius:20px; padding:16px;">
@@ -92,37 +90,16 @@
 </div>
 
 <script>
-    // ------------------- 独立连接管理（主机和客户端不再共享同一个 Peer 实例导致冲突）-------------------
-    // 注意：此页面设计为“主机”与“客户端”两个独立面板，但实际使用时，请只使用其中一侧。
-    // 为了让测试方便，两个面板仍然存在，但它们的 Peer 实例是独立的，且不会自动冲突。
-    // 但在同一个浏览器中打开本页面时，你应该只使用其中一种角色（要么作为主机，要么作为客户端）。
-    // 本版本通过将主机和客户端的 Peer 实例分离，并加入“角色选择”模式来彻底避免冲突。
-    
-    // 更好的方案：让用户选择当前设备是“主机”还是“客户端”，但我们为了保持简洁，直接让页面支持两种模式同时存在但互相独立。
-    // 实际上，如果你在同一个浏览器中同时点击“连接”试图连接自己的房间号，仍然会失败。所以必须用两个不同的标签页/设备。
-    
-    // 我们在这里添加一个检测：如果检测到当前页面的 URL 参数包含 ?client=1，则自动隐藏主机面板，只显示客户端面板。
-    // 这样用户可以用两个标签页：一个不带参数（主机模式），一个带 ?client=1（客户端模式）。
+    // 模式判断
     const urlParams = new URLSearchParams(window.location.search);
     const isClientMode = urlParams.has('client');
     
     if (isClientMode) {
-        // 客户端模式下，隐藏左侧主机面板，只显示右侧客户端面板
         document.querySelectorAll('.card')[0].style.display = 'none';
         document.querySelector('.app-container').style.justifyContent = 'center';
     } else {
-        // 主机模式下，隐藏右侧客户端面板（可选，避免误操作）
         document.querySelectorAll('.card')[1].style.display = 'none';
         document.querySelector('.app-container').style.justifyContent = 'center';
-    }
-    
-    // 根据模式初始化不同逻辑
-    if (!isClientMode) {
-        // 主机模式
-        initHost();
-    } else {
-        // 客户端模式
-        initClient();
     }
     
     // 公共函数
@@ -143,10 +120,11 @@
     }
     
     // ------------------- 主机模式 -------------------
-    function initHost() {
+    if (!isClientMode) {
         let peer;
         let localId = "";
         let currentConn = null;
+        let isConnected = false;  // 关键：自定义连接状态
         
         const myRoomIdDiv = document.getElementById('myRoomId');
         const copyRoomBtn = document.getElementById('copyRoomBtn');
@@ -225,7 +203,7 @@
         }
         
         function sendMessageToPeer(text) {
-            if (!currentConn || currentConn.open !== true) {
+            if (!currentConn || !isConnected) {
                 connStatusSpan.innerHTML = '❌ 未连接客户端，请等待对方连接';
                 return false;
             }
@@ -242,27 +220,43 @@
         }
         
         function setupConnection(conn) {
-            if (currentConn && currentConn.open && currentConn !== conn) {
+            if (currentConn && currentConn !== conn) {
                 currentConn.close();
             }
             currentConn = conn;
-            connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
+            isConnected = false;  // 初始未连接
+            
+            // 如果连接已经 open（被动接收时可能已经 open）
+            if (conn.open === true) {
+                isConnected = true;
+                connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
+            }
+            
+            conn.on('open', () => {
+                isConnected = true;
+                connStatusSpan.innerHTML = '✅ 已与客户端建立连接！';
+            });
+            
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
                 else if (typeof data === 'string') text = data;
                 if (text) addToStash(text, 'received');
             });
+            
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
+                    isConnected = false;
                     connStatusSpan.innerHTML = '🔌 连接已断开，等待客户端重新连接';
                 }
             });
+            
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
                     currentConn = null;
+                    isConnected = false;
                     connStatusSpan.innerHTML = '⚠️ 连接出错';
                 }
             });
@@ -307,8 +301,6 @@
             if (!text) return;
             if (sendMessageToPeer(text)) {
                 sendInput.value = '';
-            } else {
-                // 提示已经在函数内更新状态栏
             }
         });
         
@@ -324,9 +316,10 @@
     }
     
     // ------------------- 客户端模式 -------------------
-    function initClient() {
+    if (isClientMode) {
         let peer;
         let currentConn = null;
+        let isConnected = false;
         
         const remotePeerIdInput = document.getElementById('remotePeerIdInput');
         const joinBtn = document.getElementById('joinBtn');
@@ -355,7 +348,6 @@
             history.unshift({ text: text.trim(), timestamp: Date.now(), direction });
             if (history.length > 50) history.pop();
             saveHistory(history);
-            // 客户端暂不渲染历史列表（可简化），只显示接收消息
             appendMobileReceived(text, direction);
         }
         
@@ -374,7 +366,7 @@
         }
         
         function sendMessageToPeer(text) {
-            if (!currentConn || currentConn.open !== true) {
+            if (!currentConn || !isConnected) {
                 mobileConnStatus.innerText = '❌ 未连接到主机';
                 return false;
             }
@@ -391,27 +383,42 @@
         }
         
         function setupConnection(conn) {
-            if (currentConn && currentConn.open && currentConn !== conn) {
+            if (currentConn && currentConn !== conn) {
                 currentConn.close();
             }
             currentConn = conn;
-            mobileConnStatus.innerText = '✅ 已连接到主机';
+            isConnected = false;
+            
+            if (conn.open === true) {
+                isConnected = true;
+                mobileConnStatus.innerText = '✅ 已连接到主机';
+            }
+            
+            conn.on('open', () => {
+                isConnected = true;
+                mobileConnStatus.innerText = '✅ 已连接到主机';
+            });
+            
             conn.on('data', (data) => {
                 let text = '';
                 if (data && data.type === 'text' && data.data) text = data.data;
                 else if (typeof data === 'string') text = data;
                 if (text) addToStash(text, 'received');
             });
+            
             conn.on('close', () => {
                 if (currentConn === conn) {
                     currentConn = null;
+                    isConnected = false;
                     mobileConnStatus.innerText = '🔌 连接已断开';
                 }
             });
+            
             conn.on('error', (err) => {
                 console.warn(err);
                 if (currentConn === conn) {
                     currentConn = null;
+                    isConnected = false;
                     mobileConnStatus.innerText = '⚠️ 连接出错';
                 }
             });
@@ -426,15 +433,12 @@
                 mobileConnStatus.innerText = '⚠️ 初始化中，稍后再试';
                 return;
             }
-            if (currentConn && currentConn.open && currentConn.peer === remoteId) {
+            if (currentConn && isConnected && currentConn.peer === remoteId) {
                 mobileConnStatus.innerText = '🔗 已经连接该房间';
                 return;
             }
             const newConn = peer.connect(remoteId.trim(), { reliable: true });
             setupConnection(newConn);
-            newConn.on('open', () => {
-                mobileConnStatus.innerText = `✅ 成功连接到主机 ${remoteId}`;
-            });
             newConn.on('error', (e) => {
                 mobileConnStatus.innerText = '❌ 连接失败，请检查房间号';
                 console.error(e);
@@ -447,10 +451,8 @@
                 config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
             });
             peer.on('open', (id) => {
-                // 客户端不需要显示自己的ID，但可以记录
                 console.log('Client peer id:', id);
                 mobileConnStatus.innerText = '就绪，请输入主机房间号';
-                // 自动填充URL参数中的房间号
                 const roomParam = urlParams.get('room');
                 if (roomParam) {
                     remotePeerIdInput.value = roomParam;
