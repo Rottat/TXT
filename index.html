@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>跨平台剪贴板 · 暂存箱</title>
+    <!-- PeerJS 客户端库 + QRCode 生成库 -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, #1e2b3c 0%, #0f1a24 100%);
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .app-container {
+            max-width: 1300px;
+            width: 100%;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 24px;
+            justify-content: center;
+        }
+        .card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 32px;
+            padding: 24px;
+            box-shadow: 0 25px 45px rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.2);
+            transition: all 0.2s;
+            flex: 1;
+            min-width: 280px;
+        }
+        .card h2 {
+            margin-top: 0;
+            color: white;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-left: 4px solid #ffb347;
+            padding-left: 16px;
+        }
+        .room-area {
+            background: #2c3e33;
+            border-radius: 24px;
+            padding: 20px;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .room-id {
+            background: #00000066;
+            padding: 12px;
+            border-radius: 60px;
+            font-family: monospace;
+            font-size: 1.5rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            color: #ffd966;
+            margin: 15px 0;
+            word-break: break-all;
+        }
+        button {
+            background: #ffb347;
+            border: none;
+            color: #1e2b3c;
+            font-weight: bold;
+            padding: 10px 20px;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: 0.2s;
+            font-size: 0.9rem;
+            margin: 5px;
+        }
+        button:hover {
+            background: #ff9f1a;
+            transform: scale(0.97);
+        }
+        .input-group {
+            display: flex;
+            gap: 12px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        .input-group input {
+            flex: 3;
+            padding: 12px 18px;
+            border-radius: 60px;
+            border: none;
+            background: #f0f2f5;
+            font-size: 1rem;
+            outline: none;
+        }
+        .messages {
+            background: #0f1a1faa;
+            border-radius: 24px;
+            padding: 16px;
+            min-height: 250px;
+            max-height: 350px;
+            overflow-y: auto;
+        }
+        .msg-item {
+            background: #2e4a3e;
+            margin: 8px 0;
+            padding: 10px 14px;
+            border-radius: 20px;
+            color: white;
+            word-break: break-word;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        .msg-text {
+            flex: 1;
+        }
+        .copy-btn {
+            background: #4c6a5e;
+            padding: 6px 12px;
+            border-radius: 30px;
+            font-size: 0.7rem;
+            color: white;
+            cursor: pointer;
+        }
+        .status {
+            font-size: 0.85rem;
+            background: #00000055;
+            padding: 6px 12px;
+            border-radius: 30px;
+            display: inline-block;
+            margin-top: 10px;
+        }
+        .flex-between {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .qrcode-container {
+            text-align: center;
+            margin: 15px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 24px;
+            display: inline-block;
+            width: 100%;
+        }
+        #qrcode {
+            display: flex;
+            justify-content: center;
+        }
+        .warning {
+            color: #ffaa66;
+            font-size: 0.8rem;
+            margin-top: 10px;
+        }
+        @media (max-width: 800px) {
+            .card { min-width: 100%; }
+        }
+        hr {
+            border-color: #ffffff33;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+<div class="app-container">
+    <!-- 左侧：主机面板（电脑端创建房间） -->
+    <div class="card">
+        <h2>📦 我的暂存箱 (电脑)</h2>
+        <div class="room-area">
+            <div style="color:white; margin-bottom: 8px;">🔑 你的房间号</div>
+            <div class="room-id" id="myRoomId">加载中...</div>
+            <button id="copyRoomBtn">📋 复制房间号</button>
+            <div class="qrcode-container" style="background: transparent;">
+                <div id="qrcode" style="background:white; padding:10px; border-radius: 20px; display: inline-block;"></div>
+                <div class="warning">📱 手机微信/浏览器扫码即可加入</div>
+            </div>
+            <div class="status" id="connStatus">⚡ 等待连接...</div>
+        </div>
+
+        <div class="flex-between">
+            <span style="color:white;">✏️ 发送新内容</span>
+            <span style="color:#ccc; font-size:12px;">自动同步到已连接的设备</span>
+        </div>
+        <div class="input-group">
+            <input type="text" id="sendInput" placeholder="输入文字、代码或网址..." autocomplete="off">
+            <button id="sendBtn">📤 发送</button>
+        </div>
+
+        <div class="flex-between">
+            <span style="color:white;">📜 暂存历史</span>
+            <button id="clearHistoryBtn" style="background:#3a5a4e; color:white;">清空暂存箱</button>
+        </div>
+        <div class="messages" id="messageList">
+            <div style="color:#aaa; text-align:center;">暂无内容，发送或接收后会显示</div>
+        </div>
+    </div>
+
+    <!-- 右侧：手机模拟面板 / 已连接设备信息，实际手机扫码后会自动进入相同的界面 -->
+    <div class="card">
+        <h2>📱 移动设备视图</h2>
+        <div style="background:#2a3a30; border-radius: 20px; padding: 16px;">
+            <div style="color:white; margin-bottom: 12px;">🔗 加入已有房间</div>
+            <div class="input-group">
+                <input type="text" id="remotePeerIdInput" placeholder="粘贴房间号">
+                <button id="joinBtn">➕ 连接</button>
+            </div>
+            <div class="status" id="mobileConnStatus">未连接</div>
+            <hr>
+            <div style="color:white;">📨 接收到的内容</div>
+            <div class="messages" id="mobileMsgList" style="max-height: 200px;">
+                <div style="color:#aaa; text-align:center;">等待接收...</div>
+            </div>
+            <div style="margin-top: 16px;">
+                <div style="color:white;">📤 从手机发送</div>
+                <div class="input-group">
+                    <input type="text" id="mobileSendInput" placeholder="输入文字">
+                    <button id="mobileSendBtn">📤 发送</button>
+                </div>
+            </div>
+        </div>
+        <div class="warning" style="margin-top: 16px;">💡 提示：两台设备都打开本网页，电脑端展示房间号，手机端输入相同房间号即可实时传文字。所有记录留在各自浏览器。</div>
+    </div>
+</div>
+
+<script>
+    // ------------------- 全局变量 -------------------
+    let peer;                // Peer 实例
+    let localId = "";        // 本机 Peer ID
+    let currentConn = null;  // 当前活动的 DataConnection
+    
+    // DOM 元素
+    const myRoomIdDiv = document.getElementById('myRoomId');
+    const copyRoomBtn = document.getElementById('copyRoomBtn');
+    const qrcodeDiv = document.getElementById('qrcode');
+    const connStatusSpan = document.getElementById('connStatus');
+    const sendInput = document.getElementById('sendInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const messageList = document.getElementById('messageList');
+    const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+    
+    // 右侧（模拟手机端）元素
+    const remotePeerIdInput = document.getElementById('remotePeerIdInput');
+    const joinBtn = document.getElementById('joinBtn');
+    const mobileConnStatus = document.getElementById('mobileConnStatus');
+    const mobileMsgList = document.getElementById('mobileMsgList');
+    const mobileSendInput = document.getElementById('mobileSendInput');
+    const mobileSendBtn = document.getElementById('mobileSendBtn');
+    
+    // ---------- 暂存箱存储 key ----------
+    const STORAGE_KEY = 'clipboard_stash';
+    
+    // 加载本地历史
+    function loadHistory() {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+            try {
+                return JSON.parse(stored);
+            } catch(e) { return []; }
+        }
+        return [];
+    }
+    
+    function saveHistory(history) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    }
+    
+    // 添加一条消息到本地暂存箱（并更新UI）
+    function addToStash(text, direction = 'received') { // direction: sent, received
+        if (!text || text.trim() === '') return;
+        const history = loadHistory();
+        const newEntry = {
+            text: text.trim(),
+            timestamp: Date.now(),
+            direction: direction  // 'sent' 或 'received'
+        };
+        history.unshift(newEntry); // 最新的在上方
+        // 保留最近50条
+        if (history.length > 50) history.pop();
+        saveHistory(history);
+        renderMessageList();
+    }
+    
+    // 渲染左侧暂存箱
+    function renderMessageList() {
+        const history = loadHistory();
+        if (!history.length) {
+            messageList.innerHTML = '<div style="color:#aaa; text-align:center;">✨ 暂无内容，发送或接收后显示</div>';
+            return;
+        }
+        let html = '';
+        history.forEach(item => {
+            const directionIcon = item.direction === 'sent' ? '🚀 我发送' : '📥 收到';
+            const timeStr = new Date(item.timestamp).toLocaleTimeString();
+            html += `
+                <div class="msg-item">
+                    <div class="msg-text">
+                        <div style="font-size:0.7rem; opacity:0.7;">${directionIcon} · ${timeStr}</div>
+                        <div style="margin-top:4px;">${escapeHtml(item.text)}</div>
+                    </div>
+                    <div class="copy-btn" data-text="${escapeHtml(item.text).replace(/"/g, '&quot;')}">📋 复制</div>
+                </div>
+            `;
+        });
+        messageList.innerHTML = html;
+        // 绑定复制按钮事件
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const rawText = btn.getAttribute('data-text');
+                copyToClipboard(rawText);
+                btn.innerText = '✅ 已复制';
+                setTimeout(() => { btn.innerText = '📋 复制'; }, 1000);
+            });
+        });
+    }
+    
+    // 简单防XSS
+    function escapeHtml(str) {
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
+            return c;
+        });
+    }
+    
+    // 复制文本到剪贴板
+    function copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(err => console.warn);
+        } else {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+        }
+    }
+    
+    // 发送消息给已连接的设备
+    function sendMessageToPeer(text) {
+        if (!currentConn || currentConn.open === false) {
+            connStatusSpan.innerHTML = '❌ 未连接，请手机端先扫码/输入房间号连接';
+            setTimeout(() => { if(currentConn?.open) connStatusSpan.innerHTML = '✅ 已连接'; }, 200);
+            return false;
+        }
+        if (!text.trim()) return false;
+        const payload = { type: 'text', data: text.trim(), from: localId };
+        currentConn.send(payload);
+        // 同时保存到自己的暂存箱（发送方向）
+        addToStash(text.trim(), 'sent');
+        return true;
+    }
+    
+    // 接收消息处理
+    function onReceiveMessage(data, fromPeerId) {
+        if (data && data.type === 'text' && data.data) {
+            // 收到文本，加入暂存箱（接收方向）
+            addToStash(data.data, 'received');
+            // 同时展示在右侧移动面板（如果是手机面板模拟）
+            appendMobileReceived(data.data);
+        } else if (typeof data === 'string') {
+            // 兼容纯字符串发送
+            addToStash(data, 'received');
+            appendMobileReceived(data);
+        }
+    }
+    
+    // 右侧移动消息区域展示
+    function appendMobileReceived(text) {
+        const div = document.createElement('div');
+        div.className = 'msg-item';
+        div.style.background = '#1f3b30';
+        div.innerHTML = `<div class="msg-text">📱 ${escapeHtml(text)}</div><div class="copy-btn" data-text="${escapeHtml(text)}">复制</div>`;
+        mobileMsgList.prepend(div);
+        if (mobileMsgList.children.length > 20) mobileMsgList.removeChild(mobileMsgList.lastChild);
+        // 绑定复制按钮
+        div.querySelector('.copy-btn')?.addEventListener('click', (e) => {
+            copyToClipboard(text);
+            e.target.innerText = '✅';
+            setTimeout(() => { e.target.innerText = '复制'; }, 1000);
+        });
+    }
+    
+    // 初始化Peer (使用免费公共信令服务器)
+    function initPeer() {
+        // PeerJS 默认使用 Cloud 信令服务器 "peerjs.com"，也可自建，这里用官方云服务
+        peer = new Peer({ 
+            debug: 0,
+            config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }
+        });
+        
+        peer.on('open', (id) => {
+            localId = id;
+            myRoomIdDiv.innerText = localId;
+            // 生成二维码
+            qrcodeDiv.innerHTML = '';
+            new QRCode(qrcodeDiv, {
+                text: window.location.href.split('?')[0] + '?room=' + localId,
+                width: 140,
+                height: 140,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.H
+            });
+            // 可选：如果URL带room参数自动填充右侧
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomParam = urlParams.get('room');
+            if (roomParam && remotePeerIdInput) {
+                remotePeerIdInput.value = roomParam;
+                setTimeout(() => joinBtn.click(), 500);
+            }
+            connStatusSpan.innerHTML = '🟢 房间已创建，等待连接...';
+        });
+        
+        peer.on('connection', (conn) => {
+            // 其他设备主动连入
+            setupConnection(conn);
+        });
+        
+        peer.on('error', (err) => {
+            console.error(err);
+            connStatusSpan.innerHTML = '⚠️ 连接服务失败，请刷新重试';
+        });
+    }
+    
+    // 建立连接后的通用设置
+    function setupConnection(conn) {
+        if (currentConn && currentConn.open) {
+            // 如果已有连接，关闭旧的（保持单连接）
+            currentConn.close();
+        }
+        currentConn = conn;
+        connStatusSpan.innerHTML = '✅ 已与设备建立连接！';
+        mobileConnStatus.innerText = '✅ 已连接电脑端';
+        
+        conn.on('data', (data) => {
+            onReceiveMessage(data, conn.peer);
+        });
+        
+        conn.on('close', () => {
+            connStatusSpan.innerHTML = '🔌 连接已断开，等待新连接';
+            mobileConnStatus.innerText = '❌ 连接断开';
+            if (currentConn === conn) currentConn = null;
+        });
+        
+        conn.on('error', (err) => {
+            console.warn(err);
+        });
+    }
+    
+    // 主动连接远程房间（手机端连接电脑）
+    function connectToPeer(remoteId) {
+        if (!remoteId.trim()) {
+            mobileConnStatus.innerText = '⚠️ 请输入房间号';
+            return;
+        }
+        if (!peer) {
+            mobileConnStatus.innerText = '⚠️ 未初始化，稍后再试';
+            return;
+        }
+        if (currentConn && currentConn.open && currentConn.peer === remoteId) {
+            mobileConnStatus.innerText = '🔗 已经连接该房间';
+            return;
+        }
+        const newConn = peer.connect(remoteId.trim(), { reliable: true });
+        setupConnection(newConn);
+        // 额外监听连接打开
+        newConn.on('open', () => {
+            mobileConnStatus.innerText = '✅ 成功连接到 ' + remoteId;
+            connStatusSpan.innerHTML = '✅ 已连接移动设备';
+        });
+        newConn.on('error', (e) => {
+            mobileConnStatus.innerText = '❌ 连接失败，房间号无效或网络问题';
+            console.error(e);
+        });
+    }
+    
+    // 页面加载初始化
+    initPeer();
+    
+    // 复制房间号
+    copyRoomBtn.addEventListener('click', () => {
+        if (localId) {
+            copyToClipboard(localId);
+            copyRoomBtn.innerText = '✅ 已复制';
+            setTimeout(() => copyRoomBtn.innerText = '📋 复制房间号', 1500);
+        }
+    });
+    
+    // 发送按钮逻辑
+    sendBtn.addEventListener('click', () => {
+        const text = sendInput.value.trim();
+        if (!text) return;
+        if (sendMessageToPeer(text)) {
+            sendInput.value = '';
+        } else {
+            alert('未连接任何设备，请手机扫码或输入房间号连接后再发送');
+        }
+    });
+    
+    // 清空历史
+    clearHistoryBtn.addEventListener('click', () => {
+        if (confirm('清空暂存箱所有记录？')) {
+            saveHistory([]);
+            renderMessageList();
+        }
+    });
+    
+    // 右侧加入连接
+    joinBtn.addEventListener('click', () => {
+        connectToPeer(remotePeerIdInput.value);
+    });
+    
+    // 右侧发送消息（从手机发往电脑）
+    mobileSendBtn.addEventListener('click', () => {
+        const text = mobileSendInput.value.trim();
+        if (!text) return;
+        if (currentConn && currentConn.open) {
+            const payload = { type: 'text', data: text, from: 'mobile' };
+            currentConn.send(payload);
+            // 手机端自己也在右侧保留一份展示（已发送）
+            appendMobileReceived(`🚀 我发送: ${text}`);
+            mobileSendInput.value = '';
+            // 同时添加到电脑的暂存箱？电脑端收到后会自行添加，不用重复
+        } else {
+            mobileConnStatus.innerText = '❌ 未连接电脑，请先输入房间号连接';
+        }
+    });
+    
+    // 初始渲染本地历史
+    renderMessageList();
+    
+    // 如果加载时存在 localId，并且URL带room参数则自动连
+    window.addEventListener('load', () => {
+        setTimeout(() => {
+            if (peer && localId) {
+                const urlParams = new URLSearchParams(window.location.search);
+                const room = urlParams.get('room');
+                if (room && room !== localId) {
+                    remotePeerIdInput.value = room;
+                    joinBtn.click();
+                }
+            }
+        }, 1000);
+    });
+</script>
+</body>
+</html>
